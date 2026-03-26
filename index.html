@@ -565,6 +565,7 @@ function renderTimeline(t) {
       body = `
         <div class="tl-lbl">💬 Avance / Comentario <span class="draft-badge">Sin guardar</span></div>
         <textarea class="draft-comment-area" id="draft-txt-${di}"
+          placeholder="Comentario (opcional si cambias estatus)"
           oninput="updateDraft(${di},'text',this.value)">${esc(e.text)}</textarea>
         <div class="draft-status-row">
           <span class="draft-lbl">Estatus:</span>
@@ -648,12 +649,13 @@ async function guardarDraft(draftIdx) {
   const draft = drafts[activeTid]?.[draftIdx];
   if (!draft) return;
 
-  // Pull latest values from DOM in case oninput didn't fire (e.g. paste)
+  // Pull latest values from DOM in case oninput didn't fire
   const ta  = document.getElementById(`draft-txt-${draftIdx}`);
   const sel = document.getElementById(`draft-sel-${draftIdx}`);
   if (ta)  draft.text   = ta.value.trim();
   if (sel) draft.status = sel.value;
 
+  // Necesita al menos texto O cambio de estatus
   if (!draft.text && !draft.status) {
     toast('Agrega un comentario o selecciona un estatus.', 'err'); return;
   }
@@ -663,27 +665,27 @@ async function guardarDraft(draftIdx) {
 
   loading(true, 'Guardando...');
   try {
-    // 1. Insert comment log entry
-    const [logEntry] = await sbPost('log_entries', {
-      task_id:     t.id,
-      type:        'comment',
-      text:        draft.text || '',
-      status:      draft.status || '',
-      from_status: '',
-      to_status:   '',
-      saved:       true
-    });
-    t.log.push(logEntry);
+    // 1. Solo insertar comentario si hay texto
+    if (draft.text) {
+      const [logEntry] = await sbPost('log_entries', {
+        task_id:     t.id,
+        type:        'comment',
+        text:        draft.text,
+        status:      draft.status || '',
+        from_status: '',
+        to_status:   '',
+        saved:       true
+      });
+      t.log.push(logEntry);
+    }
 
-    // 2. If status changed, apply it and log it
+    // 2. Si hay cambio de estatus, aplicarlo
     if (draft.status && draft.status !== t.status) {
       const prev = t.status;
-      // Update task status in DB
       await sbPatch('tasks', t.id, { status: draft.status, done: draft.status==='done' });
       t.status = draft.status;
       t.done   = draft.status === 'done';
 
-      // Log status change
       const [statusEntry] = await sbPost('log_entries', {
         task_id:     t.id,
         type:        'status',
@@ -695,7 +697,6 @@ async function guardarDraft(draftIdx) {
       });
       t.log.push(statusEntry);
 
-      // Log closed if done
       if (draft.status === 'done') {
         const [closedEntry] = await sbPost('log_entries', {
           task_id:     t.id,
@@ -708,6 +709,7 @@ async function guardarDraft(draftIdx) {
         });
         t.log.push(closedEntry);
       }
+    }
     }
 
     // Remove draft from memory
@@ -900,20 +902,29 @@ async function toggleProj(pid) {
 
 async function addTask(pid) {
   const inp  = document.getElementById(`newtask-${pid}`);
-  const text = inp.value.trim(); if (!text) return;
-  const p    = getProj(pid); if (!p) return;
+  const text = inp.value.trim();
+  console.log('[addTask] pid:', pid, '| text:', text, '| inp:', inp);
+  if (!text) { console.warn('[addTask] texto vacío, saliendo'); return; }
+  const p = getProj(pid);
+  console.log('[addTask] proyecto encontrado:', p);
+  if (!p) { console.warn('[addTask] proyecto no encontrado para pid:', pid); return; }
   loading(true, 'Creando pendiente...');
   try {
-    const [task] = await sbPost('tasks', { project_id:pid, text, status:'pending', done:false });
-    const [logEntry] = await sbPost('log_entries', {
+    console.log('[addTask] enviando POST tasks...');
+    const rows = await sbPost('tasks', { project_id: pid, text, status:'pending', done:false });
+    console.log('[addTask] respuesta tasks:', rows);
+    const task = rows[0];
+    const logRows = await sbPost('log_entries', {
       task_id:task.id, type:'created', text:'Pendiente creado',
       status:'', from_status:'', to_status:'', saved:true
     });
-    task.log = [logEntry];
+    console.log('[addTask] respuesta log_entries:', logRows);
+    task.log = [logRows[0]];
     p.tasks.push(task);
     render(); inp.value='';
     toast('Pendiente creado ✓');
   } catch(e) {
+    console.error('[addTask] ERROR:', e);
     toast('Error: '+e.message,'err');
   } finally {
     loading(false);
